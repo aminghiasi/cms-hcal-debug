@@ -26,12 +26,12 @@
 #include "FWCore/Framework/interface/Frameworkfwd.h"
 #include "FWCore/Framework/interface/EDAnalyzer.h"
 #include "FWCore/Framework/interface/ESHandle.h"
-
 #include "FWCore/Framework/interface/Event.h"
 #include "FWCore/Framework/interface/MakerMacros.h"
-
+#include "FWCore/Common/interface/TriggerNames.h"
 #include "FWCore/ParameterSet/interface/ParameterSet.h"
 #include "FWCore/ServiceRegistry/interface/Service.h"
+
 #include "CommonTools/UtilAlgos/interface/TFileService.h"
 
 #include "CalibFormats/CaloTPG/interface/CaloTPGTranscoder.h"
@@ -43,7 +43,6 @@
 #include "CondFormats/DataRecord/interface/L1CaloGeometryRecord.h"
 #include "CondFormats/HcalObjects/interface/HcalChannelQuality.h"
 #include "CondFormats/L1TObjects/interface/L1CaloGeometry.h"
-
 #include "CondFormats/L1TObjects/interface/L1RCTParameters.h"
 #include "CondFormats/DataRecord/interface/L1RCTParametersRcd.h"
 #include "CondFormats/L1TObjects/interface/L1CaloHcalScale.h"
@@ -56,6 +55,10 @@
 #include "DataFormats/HcalDetId/interface/HcalTrigTowerDetId.h"
 #include "DataFormats/HcalDetId/interface/HcalDetId.h"
 #include "DataFormats/L1CaloTrigger/interface/L1CaloCollections.h"
+#include "DataFormats/VertexReco/interface/Vertex.h"
+#include "DataFormats/VertexReco/interface/VertexFwd.h"
+#include "DataFormats/Common/interface/TriggerResults.h"
+
 
 #include "Geometry/CaloGeometry/interface/CaloGeometry.h"
 #include "Geometry/HcalTowerAlgo/interface/HcalGeometry.h"
@@ -82,20 +85,23 @@ class AnalyzeTP : public edm::EDAnalyzer {
 
       // ----------member data ---------------------------
       edm::InputTag digis_;
+      edm::InputTag offlinePrimaryVertices_;
+      edm::EDGetTokenT<edm::TriggerResults>TrigTagTok_;
+      edm::InputTag trigTagSrc_;
+
+
       double threshold_;
 
-      int event_;
-
+      int event_, ls_, bx_;
+      int npv_;
       TTree *match_;
       int m_ieta_;
       int m_iphi_;
       double old_et_;
       double new_et_;
       int new_count_;
-      int old_fg0_;
-      int old_fg1_;
-      int new_fg0_;
-      int new_fg1_;
+      int old_fg_;
+      int new_fg_;
 
       TTree *tps_;
 
@@ -104,57 +110,109 @@ class AnalyzeTP : public edm::EDAnalyzer {
       int tp_depth_;
       int tp_version_;
       int tp_soi_;
-      int tp_fg0_;
-      int tp_fg1_;
+      int tp_fg_;
       double tp_et_;
+      bool HLT_Random_v2;
+      bool HLT_ZeroBias_v5;
 
       TTree *ev_;
       double ev_tp_v0_et_;
-      double ev_tp_v1_et_;
-      int ev_ntp_hb_;
-      int ev_ntp_he_;
-      int ev_ntp_hf_;
+      double ev_tp_v1_et_, sum_tp_et_hf, sum_tp_et_he, sum_tp_et_hb, sum_tp_et_all;
+      int no_tps_g_0_0 = 0, no_tps_g_0_5 = 0, no_tps_g_1 = 0, no_tps_g_2 = 0, no_tps_g_5 = 0, no_tps_g_10 = 0;
+      int no_hf_tps_g_0_0 = 0, no_hf_tps_g_0_5 = 0, no_hf_tps_g_1 = 0, no_hf_tps_g_2 = 0, no_hf_tps_g_5 = 0, no_hf_tps_g_10 = 0;
+      int no_he_tps_g_0_0 = 0, no_he_tps_g_0_5 = 0, no_he_tps_g_1 = 0, no_he_tps_g_2 = 0, no_he_tps_g_5 = 0, no_he_tps_g_10 = 0;
+      int no_hb_tps_g_0_0 = 0, no_hb_tps_g_0_5 = 0, no_hb_tps_g_1 = 0, no_hb_tps_g_2 = 0, no_hb_tps_g_5 = 0, no_hb_tps_g_10 = 0;
+
+
+
 };
 
 AnalyzeTP::AnalyzeTP(const edm::ParameterSet& config) :
    edm::EDAnalyzer(),
    digis_(config.getParameter<edm::InputTag>("triggerPrimitives")),
-   threshold_(config.getUntrackedParameter<double>("threshold", 0.))
+   offlinePrimaryVertices_(config.getParameter<edm::InputTag>("offlinePrimaryVertices")),
+   threshold_(config.getUntrackedParameter<double>("threshold", 0.5))
 {
    edm::Service<TFileService> fs;
 
    consumes<HcalTrigPrimDigiCollection>(digis_);
+   consumes<std::vector<reco::Vertex>> (offlinePrimaryVertices_);
+   trigTagSrc_ = config.getParameter<edm::InputTag> ("trigTagSrc");
+   TrigTagTok_ = consumes<edm::TriggerResults>(trigTagSrc_);
+
 
    tps_ = fs->make<TTree>("tps", "Trigger primitives");
    tps_->Branch("event", &event_);
+   tps_->Branch("BX", &bx_);
+   tps_->Branch("ls", &ls_);
    tps_->Branch("ieta", &tp_ieta_);
    tps_->Branch("iphi", &tp_iphi_);
    tps_->Branch("depth", &tp_depth_);
    tps_->Branch("version", &tp_version_);
    tps_->Branch("soi", &tp_soi_);
    tps_->Branch("et", &tp_et_);
-   tps_->Branch("fg0", &tp_fg0_);
-   tps_->Branch("fg1", &tp_fg1_);
+   tps_->Branch("fg", &tp_fg_);
+   tps_->Branch("npv",&npv_);
+   tps_->Branch("HLT_Random_v2"  ,&HLT_Random_v2);
+   tps_->Branch("HLT_ZeroBias_v5",&HLT_ZeroBias_v5);
 
    ev_ = fs->make<TTree>("evs", "Event quantities");
+   ev_->Branch("ls", &ls_);
+   ev_->Branch("BX", &bx_);
    ev_->Branch("event", &event_);
    ev_->Branch("tp_v0_et", &ev_tp_v0_et_);
-   ev_->Branch("tp_v1_et", &ev_tp_v1_et_);
-   ev_->Branch("ntp_hb", &ev_ntp_hb_);
-   ev_->Branch("ntp_he", &ev_ntp_he_);
-   ev_->Branch("ntp_hf", &ev_ntp_hf_);
+   ev_->Branch("tp_v1_et"   , &ev_tp_v1_et_);
+   ev_->Branch("sum_tp_et_hf", &sum_tp_et_hf);
+   ev_->Branch("sum_tp_et_he", &sum_tp_et_he);
+   ev_->Branch("sum_tp_et_hb", &sum_tp_et_hb);
+   ev_->Branch("sum_tp_et_all", &sum_tp_et_all);
+   ev_->Branch("npv",&npv_);
+   ev_->Branch("HLT_Random_v2"             ,&HLT_Random_v2);
+   ev_->Branch("HLT_ZeroBias_v5"           ,&HLT_ZeroBias_v5);
+
+   ev_->Branch("no_tps_g_0_0"           ,&no_tps_g_0_5);
+   ev_->Branch("no_tps_g_0_5"           ,&no_tps_g_0_5);
+   ev_->Branch("no_tps_g_1"           ,&no_tps_g_1);
+   ev_->Branch("no_tps_g_2"           ,&no_tps_g_2);
+   ev_->Branch("no_tps_g_5"           ,&no_tps_g_5);
+   ev_->Branch("no_tps_g_10"           ,&no_tps_g_10);
+
+   ev_->Branch("no_hf_tps_g_0_0"         ,&no_hf_tps_g_0_5);
+   ev_->Branch("no_hf_tps_g_0_5"         ,&no_hf_tps_g_0_5);
+   ev_->Branch("no_hf_tps_g_1"           ,&no_hf_tps_g_1);
+   ev_->Branch("no_hf_tps_g_2"           ,&no_hf_tps_g_2);
+   ev_->Branch("no_hf_tps_g_5"           ,&no_hf_tps_g_5);
+   ev_->Branch("no_hf_tps_g_10"          ,&no_hf_tps_g_10);
+
+   ev_->Branch("no_he_tps_g_0_0"         ,&no_he_tps_g_0_5);
+   ev_->Branch("no_he_tps_g_0_5"         ,&no_he_tps_g_0_5);
+   ev_->Branch("no_he_tps_g_1"           ,&no_he_tps_g_1);
+   ev_->Branch("no_he_tps_g_2"           ,&no_he_tps_g_2);
+   ev_->Branch("no_he_tps_g_5"           ,&no_he_tps_g_5);
+   ev_->Branch("no_he_tps_g_10"          ,&no_he_tps_g_10);
+
+   ev_->Branch("no_hb_tps_g_0_0"         ,&no_hb_tps_g_0_5);
+   ev_->Branch("no_hb_tps_g_0_5"         ,&no_hb_tps_g_0_5);
+   ev_->Branch("no_hb_tps_g_1"           ,&no_hb_tps_g_1);
+   ev_->Branch("no_hb_tps_g_2"           ,&no_hb_tps_g_2);
+   ev_->Branch("no_hb_tps_g_5"           ,&no_hb_tps_g_5);
+   ev_->Branch("no_hb_tps_g_10"          ,&no_hb_tps_g_10);
+
+
 
    match_ = fs->make<TTree>("ms", "TP matches");
    match_->Branch("event", &event_);
+   match_->Branch("BX", &bx_);
+   match_->Branch("ls", &ls_);
    match_->Branch("ieta", &m_ieta_);
    match_->Branch("iphi", &m_iphi_);
    match_->Branch("et1x1", &new_et_);
    match_->Branch("et2x3", &old_et_);
    match_->Branch("n1x1", &new_count_);
-   match_->Branch("fg0_1x1", &new_fg0_);
-   match_->Branch("fg1_1x1", &new_fg1_);
-   match_->Branch("fg0_2x3", &old_fg0_);
-   match_->Branch("fg1_2x3", &old_fg1_);
+   match_->Branch("fg1x1", &new_fg_);
+   match_->Branch("fg2x3", &old_fg_);
+   match_->Branch("npv",&npv_);
+
 }
 
 AnalyzeTP::~AnalyzeTP() {}
@@ -163,8 +221,11 @@ void
 AnalyzeTP::analyze(const edm::Event& event, const edm::EventSetup& setup)
 {
    using namespace edm;
+   using namespace std;
 
    event_ = event.id().event();
+   ls_ = event.id().luminosityBlock();
+   bx_ = event.bunchCrossing();
 
    Handle<HcalTrigPrimDigiCollection> digis;
    if (!event.getByLabel(digis_, digis)) {
@@ -174,7 +235,36 @@ AnalyzeTP::analyze(const edm::Event& event, const edm::EventSetup& setup)
       return;
    }
 
+   int npv=0;
+
+        edm::Handle < vector < reco::Vertex > > pvHandle;
+   try {
+     event.getByLabel( offlinePrimaryVertices_, pvHandle );
+   } catch ( cms::Exception & e ) {
+   }
+
+   npv = pvHandle->size();
+   npv_ = npv;
+
+
+   edm::Handle<edm::TriggerResults> trigResults;
+   event.getByToken(TrigTagTok_,trigResults);
+
+   const edm::TriggerNames& trigNames = event.triggerNames(*trigResults);
+   size_t pathIndex = trigNames.triggerIndex("HLT_Random_v2");
+   HLT_Random_v2 = false;
+   if ( pathIndex < trigResults->size() && trigResults->accept(pathIndex))
+      HLT_Random_v2 = true;
+
+   size_t pathIndex2 = trigNames.triggerIndex("HLT_ZeroBias_v5");
+   HLT_ZeroBias_v5 = false;
+   if ( pathIndex2 < trigResults->size() && trigResults->accept(pathIndex2))
+      HLT_ZeroBias_v5 = true;
+
+
+
    ESHandle<CaloTPGTranscoder> decoder;
+
    setup.get<CaloTPGRecord>().get(decoder);
 
    std::unordered_map<int, std::unordered_map<int, double>> old_ets;
@@ -184,17 +274,25 @@ AnalyzeTP::analyze(const edm::Event& event, const edm::EventSetup& setup)
    ev_tp_v0_et_ = 0.;
    ev_tp_v1_et_ = 0.;
 
-   ev_ntp_hb_ = 0;
-   ev_ntp_he_ = 0;
-   ev_ntp_hf_ = 0;
+   sum_tp_et_hf = 0; sum_tp_et_he = 0; sum_tp_et_hb = 0; sum_tp_et_all = 0;
+
+   no_tps_g_0_0 = 0; no_tps_g_0_5 = 0; no_tps_g_1 = 0; no_tps_g_2 = 0; no_tps_g_5 = 0; no_tps_g_10 = 0;
+   no_hf_tps_g_0_0 = 0; no_hf_tps_g_0_5 = 0; no_hf_tps_g_1 = 0; no_hf_tps_g_2 = 0; no_hf_tps_g_5 = 0; no_hf_tps_g_10 = 0;
+   no_he_tps_g_0_0 = 0; no_he_tps_g_0_5 = 0; no_he_tps_g_1 = 0; no_he_tps_g_2 = 0; no_he_tps_g_5 = 0; no_he_tps_g_10 = 0;
+   no_hb_tps_g_0_0 = 0; no_hb_tps_g_0_5 = 0; no_hb_tps_g_1 = 0; no_hb_tps_g_2 = 0; no_hb_tps_g_5 = 0; no_hb_tps_g_10 = 0;
+
 
    ESHandle<HcalTrigTowerGeometry> tpd_geo;
    setup.get<CaloGeometryRecord>().get(tpd_geo);
 
    std::map<HcalTrigTowerDetId, HcalTriggerPrimitiveDigi> ttids;
-   for (const auto& digi: *digis) {
+   for (const auto& digi: *digis)
+   {
       if (digi.id().version() == 1)
+      {
          ttids[digi.id()] = digi;
+      }
+
    }
 
    for (const auto& digi: *digis) {
@@ -209,26 +307,80 @@ AnalyzeTP::analyze(const edm::Event& event, const edm::EventSetup& setup)
       tp_version_ = id.version();
       tp_soi_ = digi.SOI_compressedEt();
       tp_et_ = decoder->hcaletValue(id, digi.t0());
-      tp_fg0_ = digi.t0().fineGrain(0);
-      tp_fg1_ = digi.t0().fineGrain(1);
+      tp_fg_ = digi.SOI_fineGrain();
 
+
+      if ( abs(tp_ieta_) == 28 || abs(tp_ieta_) == 16 ) if ( tp_et_ < 2 ) std::cout << "tp_et: " << tp_et_ << std::endl;
+      if (tp_version_ == 0 && abs(tp_ieta_) >= 29) {
+         ev_tp_v0_et_ += tp_et_;
+      } else if (tp_version_ == 1) {
+         ev_tp_v1_et_ += tp_et_;
+      }
+      if (  tp_et_ > 0.5 && HLT_ZeroBias_v5 == false ) 
+      {
+         if ( abs(tp_ieta_) >= 29 && tp_version_ == 1   ) sum_tp_et_hf += tp_et_;
+         if ( abs(tp_ieta_) <  29 && abs(tp_ieta_) > 16 ) sum_tp_et_he += tp_et_;
+         if ( abs(tp_ieta_) <=  16                      ) sum_tp_et_hb += tp_et_;
+
+      }// if
+
+
+
+
+      if ( tp_et_ > 0.0 && HLT_ZeroBias_v5 == false ) 
+      {
+         if ( abs(tp_ieta_) >= 29 && tp_version_ == 1   ) no_hf_tps_g_0_0++;
+         if ( abs(tp_ieta_) <  29 && abs(tp_ieta_) > 16 ) no_he_tps_g_0_0++;
+         if ( abs(tp_ieta_) <=  16                      ) no_hb_tps_g_0_0++;
+
+         no_tps_g_0_0++;
+      }
+
+      if ( tp_et_ > 0.5 && HLT_ZeroBias_v5 == false ) 
+      {
+         if ( abs(tp_ieta_) >= 29 && tp_version_ == 1   ) no_hf_tps_g_0_5++;
+         if ( abs(tp_ieta_) <  29 && abs(tp_ieta_) > 16 ) no_he_tps_g_0_5++;
+         if ( abs(tp_ieta_) <=  16                      ) no_hb_tps_g_0_5++;
+         no_tps_g_0_5++;
+      }
+
+      if ( tp_et_ > 1 && HLT_ZeroBias_v5 == false ) 
+      {
+         if ( abs(tp_ieta_) >= 29 && tp_version_ == 1   ) no_hf_tps_g_1++;
+         if ( abs(tp_ieta_) <  29 && abs(tp_ieta_) > 16 ) no_he_tps_g_1++;
+         if ( abs(tp_ieta_) <=  16                      ) no_hb_tps_g_1++;
+         no_tps_g_1++;
+      }
+
+      if ( tp_et_ > 2 && HLT_ZeroBias_v5 == false ) 
+      {
+         if ( abs(tp_ieta_) >= 29 && tp_version_ == 1   ) no_hf_tps_g_2++;
+         if ( abs(tp_ieta_) <  29 && abs(tp_ieta_) > 16 ) no_he_tps_g_2++;
+         if ( abs(tp_ieta_) <=  16                      ) no_hb_tps_g_2++;
+         no_tps_g_2++;
+      }
+
+      if ( tp_et_ > 5 && HLT_ZeroBias_v5 == false )  
+      {
+         if ( abs(tp_ieta_) >= 29 && tp_version_ == 1   ) no_hf_tps_g_5++;
+         if ( abs(tp_ieta_) <  29 && abs(tp_ieta_) > 16 ) no_he_tps_g_5++;
+         if ( abs(tp_ieta_) <=  16                      ) no_hb_tps_g_5++;
+         no_tps_g_5++;
+      }
+
+      if ( tp_et_ > 10 && HLT_ZeroBias_v5 == false )  
+      {
+         if ( abs(tp_ieta_) >= 29 && tp_version_ == 1   ) no_hf_tps_g_10++;
+         if ( abs(tp_ieta_) <  29 && abs(tp_ieta_) > 16 ) no_he_tps_g_10++;
+         if ( abs(tp_ieta_) <=  16                      ) no_hb_tps_g_10++;
+         no_tps_g_10++;
+      }
       if (tp_et_ < threshold_)
          continue;
 
       tps_->Fill();
 
-      if (abs(tp_ieta_) <= 16)
-         ++ev_ntp_hb_;
-      else if (abs(tp_ieta_) <= 29)
-         ++ev_ntp_he_;
-      else
-         ++ev_ntp_hf_;
 
-      if (tp_version_ == 0 and abs(tp_ieta_) >= 29) {
-         ev_tp_v0_et_ += tp_et_;
-      } else if (tp_version_ == 1) {
-         ev_tp_v1_et_ += tp_et_;
-      }
 
       if (abs(tp_ieta_) >= 29 and tp_version_ == 0) {
          std::set<HcalTrigTowerDetId> matches;
@@ -244,27 +396,17 @@ AnalyzeTP::analyze(const edm::Event& event, const edm::EventSetup& setup)
          new_et_ = 0;
          new_count_ = 0;
          old_et_ = tp_et_;
-         old_fg0_ = tp_fg0_;
-         old_fg1_ = tp_fg1_;
-         new_fg0_ = 0;
-         new_fg1_ = 0;
+         old_fg_ = tp_fg_;
+         new_fg_ = 0;
          for (const auto& m: matches) {
             if (m.version() == 1 and abs(m.ieta()) >= 40 and m.iphi() % 4 == 1)
                continue;
 
             new_et_ += decoder->hcaletValue(m, ttids[m].t0());
             ++new_count_;
-            new_fg0_ = new_fg0_ || ttids[m].t0().fineGrain(0);
-            new_fg1_ = new_fg1_ || ttids[m].t0().fineGrain(1);
+            new_fg_ = new_fg_ || ttids[m].t0().fineGrain();
          }
          match_->Fill();
-      }
-   }
-
-   for (int i = -4; i <= 4; ++i) {
-      if (i == 0)
-         continue;
-      for (int j = 0; j < 18; ++j) {
       }
    }
 
